@@ -13,7 +13,7 @@ import sys
 import re
 import params
 
-def LIProfileURLFromName(name, affiliation):
+def LIProfileURLFromNameViaGoogle(name, affiliation):
   linkedin = "site:linkedin.com"
   results = search("intitle:\"%s\" \"%s\" %s" % (name, affiliation, linkedin), num_results=1)
   if len(results) == 0:
@@ -22,6 +22,37 @@ def LIProfileURLFromName(name, affiliation):
       return None
   url = results[0]
   return url
+
+def LIProfileURLFromNameViaLI(driver, name, affiliation):
+  driver.get('https://www.linkedin.com/feed/')
+  elem = WebDriverWait(driver, 10).until(
+    EC.presence_of_element_located((By.XPATH, '//input[@aria-label="Search"]')))
+  elem.click()
+  elem.clear()
+  elem.send_keys(name + ' ' + affiliation)
+  elem.send_keys(Keys.ENTER)
+  WebDriverWait(driver, 10).until(
+    EC.presence_of_element_located((By.XPATH, '//span[text()="Edit search" or text()="Message" or text()="Connect" or text()="Follow"]')))
+
+  elems = driver.find_elements_by_xpath('//span[text()="Edit search"]')
+  if elems:
+    print('[%s] PROFILE: None' % name)
+    return None
+  elems = driver.find_elements_by_xpath('//a[contains(@href, "https://www.linkedin.com/in/")]')
+  assert elems
+  urls = list(dict.fromkeys([elem.get_attribute('href') for elem in elems]))
+  if len(urls) > 1:
+    print('[%s] PROFILE: Many - (%s)' % (name, ', '.join(urls)))
+    return None
+  url = urls[0]
+  print('[%s] PROFILE: OK - %s' % (name, url))
+  return url
+
+def LIProfileURLFromName(driver, name, affiliation, use_google):
+  if use_google:
+    return LIProfileURLFromNameViaGoogle(name, affiliation)
+  else:
+    return LIProfileURLFromNameViaLI(driver, name, affiliation)
 
 def LILogin(driver, username, password):
   driver.get("https://www.linkedin.com/login")
@@ -32,17 +63,33 @@ def LILogin(driver, username, password):
   elem.clear()
   elem.send_keys(password)
   elem.send_keys(Keys.RETURN)
+  WebDriverWait(driver, 10).until(
+    EC.presence_of_element_located((By.XPATH, '//input[@aria-label="Search"]')))
 
 def LIProfileLoad(driver, pURL):
   driver.get(pURL)
-  WebDriverWait(driver, 10).until(
+  elem = WebDriverWait(driver, 10).until(
     EC.presence_of_element_located((By.CLASS_NAME, 'dist-value')))
-  name = re.compile('[^\s]*\s(.*)\s.\sLinkedIn').match(driver.title).group(1)
-  elem = driver.find_element_by_class_name("dist-value")
+  name = re.compile('^[^\s]*\s(.*)\s.\sLinkedIn$').match(driver.title).group(1)
 
-  return name, elem.text
+  status = "not-connected"
+  if elem.text == "1st":
+    status = "connected"
+  elif driver.find_elements_by_xpath('//span[text()="Pending"]'):
+    status = "pending"
+  print('[%s] PROFILE LOAD: %s' % (name, status))
 
-def LIProfileConnect(driver, name, message):
+  return name, status
+
+def LIProfileConnect(driver, name, status, message, dry_run):
+  if status == "connected":
+    return True
+  if status == "pending":
+    return False
+  if dry_run:
+    print('[%s] CONNECT: Dry run' % name)
+    return False
+
   try:
     elem = driver.find_element_by_xpath('//span[text()="More actions"]/ancestor::button')
     elem.click()
@@ -56,8 +103,10 @@ def LIProfileConnect(driver, name, message):
   elem.clear()
   elem.send_keys(message)
   elem = driver.find_element_by_xpath('//span[text()="Send"]')
-  #elem.click()
-  print('CONNECT: ' + name)
+  elem.click()
+  print('[%s] CONNECT: OK' % name)
+
+  return False
 
 def LIGroupLoad(driver, gURL):
   driver.get(gURL)
@@ -65,21 +114,28 @@ def LIGroupLoad(driver, gURL):
     EC.presence_of_element_located((By.XPATH, '//span[text()="Invite connections"]')))
   return
 
-def LIGroupInvite(driver, name):
+def LIGroupInvite(driver, name, dry_run):
+  if dry_run:
+    print('[%s] INVITE: Dry run' % name)
+    return
   elem = driver.find_element_by_xpath('//span[text()="Invite connections"]/ancestor::button')
   elem.click()
   elem = driver.find_element_by_xpath('//*[@id="-invitee-picker-search"]//input')
   elem.click()
+  elem.clear()
   elem.send_keys(name)
   elem = WebDriverWait(driver, 10).until(
     EC.presence_of_element_located((By.XPATH, '//div[text()="%s"]' % name)))
   if driver.find_elements_by_xpath('//div[text()="Member"]'):
-    print('ALREADY INVITED: ' + name)
+    print('[%s] INVITE: Member' % name)
+    return
+  if driver.find_elements_by_xpath('//div[text()="Invited"]'):
+    print('[%s] INVITE: Pending' % name)
     return
   elem.click()
   elem = driver.find_element_by_xpath('//span[text()="Invite 1"]/ancestor::button')
-  #elem.click()
-  print('GROUP INVITE: ' + name)
+  elem.click()
+  print('[%s] INVITE: OK' % name)
 
   return
 
@@ -99,14 +155,14 @@ driver.maximize_window()
 LILogin(driver, params.username, params.password)
 
 for name in params.names:
-  pURL = LIProfileURLFromName(name, params.affiliation)
+  pURL = LIProfileURLFromName(driver, name, params.affiliation, params.use_google)
+  if not pURL:
+    continue
   
-  name, distance = LIProfileLoad(driver, pURL)
+  name, status = LIProfileLoad(driver, pURL)
   
-  if distance != '1st':
-    LIProfileConnect(driver, name, params.connect_message)
-  else:
+  if LIProfileConnect(driver, name, status, params.connect_message, params.connect_dry_run):
     LIGroupLoad(driver, params.group)
-    LIGroupInvite(driver, name)
+    LIGroupInvite(driver, name, params.invite_dry_run)
 
 driver.close()

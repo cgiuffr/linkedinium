@@ -4,3 +4,6 @@ affiliation = "affiliation"
 username = "username"
 password = "password"
 message = "message"
+use_google = False
+connect_dry_run = True
+invite_dry_run = True

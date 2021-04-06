@@ -11,9 +11,10 @@ from selenium.webdriver.support import expected_conditions as EC
 import argparse
 import sys
 import re
+import unicodedata
 import params
 
-def LIProfileURLFromNameViaGoogle(name, affiliation):
+def LIProfileURLFromNameViaGoogle(name, affiliation, affiliation_extra):
   linkedin = "site:linkedin.com"
   results = search("intitle:\"%s\" \"%s\" %s" % (name, affiliation, linkedin), num_results=1)
   if len(results) == 0:
@@ -23,16 +24,23 @@ def LIProfileURLFromNameViaGoogle(name, affiliation):
   url = results[0]
   return url
 
-def LIProfileURLFromNameViaLI(driver, name, affiliation):
+def LIProfileURLFromNameViaLI(driver, name, affiliation, affiliation_extra):
+  if affiliation_extra:
+    ret = LIProfileURLFromNameViaLISearch(driver, name + ' ' + affiliation + ' ' + affiliation_extra)
+    if ret:
+      return ret
+  return LIProfileURLFromNameViaLISearch(driver, name + ' ' + affiliation)
+
+def LIProfileURLFromNameViaLISearch(driver, search_string):
   driver.get('https://www.linkedin.com/feed/')
   elem = WebDriverWait(driver, 10).until(
     EC.presence_of_element_located((By.XPATH, '//input[@aria-label="Search"]')))
   elem.click()
   elem.clear()
-  elem.send_keys(name + ' ' + affiliation)
+  elem.send_keys(search_string)
   elem.send_keys(Keys.ENTER)
   WebDriverWait(driver, 10).until(
-    EC.presence_of_element_located((By.XPATH, '//span[text()="Edit search" or text()="Message" or text()="Connect" or text()="Follow"]')))
+    EC.presence_of_element_located((By.XPATH, '//div[@class="search-results-container"]//span[text()="Edit search" or text()="Message" or text()="Connect" or text()="Follow" or text()="Pending"]')))
 
   elems = driver.find_elements_by_xpath('//span[text()="Edit search"]')
   if elems:
@@ -40,19 +48,35 @@ def LIProfileURLFromNameViaLI(driver, name, affiliation):
     return None
   elems = driver.find_elements_by_xpath('//a[contains(@href, "https://www.linkedin.com/in/")]')
   assert elems
-  urls = list(dict.fromkeys([elem.get_attribute('href') for elem in elems]))
-  if len(urls) > 1:
-    print('[%s] PROFILE: Many - (%s)' % (name, ', '.join(urls)))
+  urls = []
+  match_urls = []
+  for elem in elems:
+    name_elems = elem.find_elements_by_xpath('.//span[@dir="ltr"]/span')
+    if not name_elems or len(name_elems)>2:
+      continue
+    url = elem.get_attribute('href')
+    cmp_name = unicodedata.normalize('NFKD', name_elems[0].text)
+    cmp_name = cmp_name.encode('ascii', 'ignore').decode('ascii', 'ignore').strip()
+    if cmp_name.lower() == name.lower():
+      match_urls.append(url)
+      continue
+    urls.append(url)
+  if len(match_urls) == 1:
+    url = match_urls[0]
+    print('[%s] PROFILE: OK - %s' % (name, url))
+    return url
+  if len(match_urls) > 1 or len(urls) > 1:
+    print('[%s] PROFILE: Many - (%s)' % (name, ', '.join(match_urls) + ', '.join(urls)))
     return None
   url = urls[0]
   print('[%s] PROFILE: OK - %s' % (name, url))
   return url
 
-def LIProfileURLFromName(driver, name, affiliation, use_google):
+def LIProfileURLFromName(driver, name, affiliation, affiliation_extra, use_google):
   if use_google:
-    return LIProfileURLFromNameViaGoogle(name, affiliation)
+    return LIProfileURLFromNameViaGoogle(name, affiliation, affiliation_extra)
   else:
-    return LIProfileURLFromNameViaLI(driver, name, affiliation)
+    return LIProfileURLFromNameViaLI(driver, name, affiliation, affiliation_extra)
 
 def LILogin(driver, username, password):
   driver.get("https://www.linkedin.com/login")
@@ -155,7 +179,7 @@ driver.maximize_window()
 LILogin(driver, params.username, params.password)
 
 for name in params.names:
-  pURL = LIProfileURLFromName(driver, name, params.affiliation, params.use_google)
+  pURL = LIProfileURLFromName(driver, name, params.affiliation, params.affiliation_extra, params.use_google)
   if not pURL:
     continue
   
